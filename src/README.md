@@ -12,19 +12,19 @@ This application simulates a customer support interaction where an AI bot acts o
 
 ## Setup
 
-1. Create a `.env` file in the project root with your Groq API key:
+1. Create a `.env` file in the src directory with your Groq API key:
    ```
    GROQ_API_KEY=your_api_key_here
    ```
 
 2. Install the required packages:
    ```
-   pip install -r requirements.txt
+   pip install -r src/requirements.txt
    ```
 
 3. Run the application:
    ```
-   python run.py
+   python src/run.py
    ```
 
 ## Conversation Flow
@@ -34,14 +34,3 @@ This application simulates a customer support interaction where an AI bot acts o
 3. Bot provides member ID for authentication
 4. Bot inquires about plan status
 5. Conversation concludes
-
-## Project Structure
-
-- `bot_agent.py`: Contains the LangGraph workflow and state management
-- `app.py`: Streamlit user interface
-- `run.py`: Entry point script with environment validation
-
-## Requirements
-
-- Python 3.9+
-- Groq API key
