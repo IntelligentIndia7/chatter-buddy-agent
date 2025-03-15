@@ -14,4 +14,4 @@ if not os.environ.get("GROQ_API_KEY"):
     sys.exit(1)
 
 # Run the Streamlit application
-os.system("streamlit run app.py")
+os.system("streamlit run src/app.py")
