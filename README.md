@@ -1,42 +1,34 @@
 
 # Customer Support Bot Simulator
 
-This application simulates a customer support interaction where an AI bot acts on behalf of a customer. The bot interacts with a support agent to inquire about insurance coverage.
+A Python-based Streamlit application that simulates a customer support interaction with an AI bot acting on behalf of a customer.
 
-## Features
+## Setup Instructions
 
-- Automated conversation flow through different states using LangGraph
-- Natural language processing with LangChain and Groq LLM
-- Interactive chat interface built with Streamlit
-- State tracking for meaningful conversations
-
-## Setup
-
-1. Create a `.env` file with your Groq API key:
+1. Clone this repository
+2. Create a `.env` file with your Groq API key:
    ```
    GROQ_API_KEY=your_api_key_here
    ```
-
-2. Install the required packages:
+3. Install the required packages:
    ```
    pip install -r requirements.txt
    ```
-
-3. Run the application:
+4. Run the application:
    ```
    python run.py
    ```
 
-## Conversation Flow
+## About This Project
 
-1. Bot introduces itself and asks for agent's name
-2. Bot confirms if it's in the right queue for coverage inquiries
-3. Bot provides member ID for authentication
-4. Bot inquires about plan status
-5. Conversation concludes
+This application uses:
+- Streamlit for the UI
+- LangChain and LangGraph for the conversation flow
+- Groq for LLM access
 
-## Project Structure
-
-- `bot_agent.py`: Contains the LangGraph workflow and state management
-- `app.py`: Streamlit user interface
-- `run.py`: Entry point script with environment validation
+The customer bot follows a specific conversation flow:
+1. Introduction and asking for the agent's name
+2. Confirmation of being in the correct queue for coverage inquiries
+3. Authentication with a member ID
+4. Inquiry about insurance plan status
+5. Conclusion of the conversation

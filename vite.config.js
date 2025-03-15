@@ -1,11 +1,10 @@
 
-// This is a minimal configuration file for Vite
-// Since this project is primarily a Python application using Streamlit,
-// this file is just a placeholder to satisfy the environment requirements
+// This file is only kept to satisfy the build system requirements.
+// The actual application is a Python-based Streamlit app.
 
 export default {
-  // This configuration allows static serving of HTML files
   server: {
+    port: 8080,
     open: '/index.html'
   }
 }
