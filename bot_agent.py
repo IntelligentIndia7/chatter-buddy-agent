@@ -1,293 +1,269 @@
 
 import os
-from typing import Dict, List, Any, Optional
-from langchain_core.messages import HumanMessage, AIMessage
+from typing import Dict, List, Optional, TypedDict, Literal
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, END
-from datetime import datetime
-
-# Initialize the LLM
-llm = ChatGroq(
-    model_name="llama3-70b-8192",
-    api_key=os.environ.get("GROQ_API_KEY")
-)
 
 # Define conversation states
-CONVERSATION_STATES = {
-    "INTRODUCTION": "Introduction phase where the bot introduces itself",
-    "QUEUE_CONFIRMATION": "Confirming if this is the right queue for coverage inquiries",
-    "AUTHENTICATION": "Authenticating the member using their ID",
-    "PLAN_INQUIRY": "Inquiring about the plan status",
-    "CONCLUSION": "Concluding the conversation"
-}
+ConversationState = Literal[
+    "INTRODUCTION", 
+    "QUEUE_CONFIRMATION", 
+    "AUTHENTICATION", 
+    "PLAN_INQUIRY",
+    "CONCLUSION"
+]
 
 # Define the state schema
-class CustomerState:
-    messages: List[Dict[str, str]]
+class State(TypedDict):
+    messages: List[Dict]
     agent_name: Optional[str]
     member_id: Optional[str]
     correct_queue: Optional[bool]
     authenticated: Optional[bool]
     plan_status: Optional[str]
-    conversation_state: str
+    conversation_state: ConversationState
 
-# Define the nodes for the conversation graph
-def determine_next_state(state: Dict[str, Any]) -> str:
-    """Determine the next state of the conversation based on current state and responses."""
-    current_state = state.get("conversation_state", "INTRODUCTION")
-    
-    if current_state == "INTRODUCTION":
-        if state.get("agent_name"):
-            return "QUEUE_CONFIRMATION"
-        return "INTRODUCTION"
-    
-    elif current_state == "QUEUE_CONFIRMATION":
-        if state.get("correct_queue") is not None:
-            return "AUTHENTICATION"
-        return "QUEUE_CONFIRMATION"
-    
-    elif current_state == "AUTHENTICATION":
-        if state.get("authenticated"):
-            return "PLAN_INQUIRY"
-        return "AUTHENTICATION"
-    
-    elif current_state == "PLAN_INQUIRY":
-        if state.get("plan_status"):
-            return "CONCLUSION"
-        return "PLAN_INQUIRY"
-    
-    elif current_state == "CONCLUSION":
-        return END
-    
-    return current_state
+# Initialize LLM
+groq_api_key = os.environ.get("GROQ_API_KEY", "")
+llm = ChatGroq(
+    model="llama3-70b-8192",
+    temperature=0.7,
+    api_key=groq_api_key
+)
 
-def introduction(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the introduction phase of the conversation."""
-    # Extract the most recent agent message
-    agent_messages = [m for m in state["messages"] if m["role"] == "agent"]
+# System prompts for each state
+SYSTEM_PROMPTS = {
+    "INTRODUCTION": """You are a bot acting on behalf of a customer interacting with a customer support agent.
+    Your goal is to introduce yourself politely and ask for the agent's name.
+    Record the agent's name when they provide it.
+    Only respond as the customer.""",
     
-    if not agent_messages:
-        # If no agent messages yet, this is the initial state
-        return state
+    "QUEUE_CONFIRMATION": """You are a bot acting on behalf of a customer.
+    Your goal is to confirm if you're in the right queue for coverage inquiries.
+    If not, ask to be transferred to the right queue or request the phone number for the right department.
+    Remember the agent's name is {agent_name}.
+    Only respond as the customer.""",
     
-    recent_agent_msg = agent_messages[-1]["content"]
+    "AUTHENTICATION": """You are a bot acting on behalf of a customer.
+    Your goal is to provide authentication details.
+    Offer your member ID (AD78902145) proactively and ask if any further details are needed.
+    Remember the agent's name is {agent_name}.
+    Only respond as the customer.""",
     
-    # Check if the agent has introduced themselves
-    agent_name = None
-    
-    # Simple name extraction logic
-    if "name is" in recent_agent_msg.lower():
-        name_part = recent_agent_msg.lower().split("name is")[1].strip()
-        agent_name = name_part.split()[0].capitalize()
-    elif "this is" in recent_agent_msg.lower():
-        name_part = recent_agent_msg.lower().split("this is")[1].strip()
-        agent_name = name_part.split()[0].capitalize()
-    
-    if agent_name:
-        # Update state with agent name
-        state["agent_name"] = agent_name
+    "PLAN_INQUIRY": """You are a bot acting on behalf of a customer.
+    Your goal is to inquire about whether your insurance plan is active.
+    Ask {agent_name} to check if your plan is currently active.
+    Only respond as the customer."""
+}
+
+# Define state transitions
+def should_transition_to_queue_confirmation(state: State) -> bool:
+    """Check if we should move to queue confirmation state"""
+    messages = state["messages"]
+    if len(messages) < 2:
+        return False
+    # After introducing and getting agent's name
+    return state["agent_name"] is not None
+
+def should_transition_to_authentication(state: State) -> bool:
+    """Check if we should move to authentication state"""
+    return state["correct_queue"] is True
+
+def should_transition_to_plan_inquiry(state: State) -> bool:
+    """Check if we should move to plan inquiry state"""
+    return state["authenticated"] is True
+
+def should_end_conversation(state: State) -> bool:
+    """Check if we should end the conversation"""
+    return state["plan_status"] is not None
+
+# Define state processing functions
+def process_introduction(state: State) -> State:
+    """Process introduction state and extract agent name"""
+    messages = state["messages"]
+    # Check last message for agent name
+    if len(messages) > 0 and messages[-1]["role"] == "agent":
+        agent_message = messages[-1]["content"].lower()
         
-        # Add bot response thanking agent and asking about queue
-        bot_response = f"Nice to meet you, {agent_name}! My name is Sarah Johnson. I'm calling to check if my insurance covers a procedure I'm planning. Is this the right department for coverage inquiries?"
-        
-        # Add message to history
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        # Update conversation state
-        state["conversation_state"] = "QUEUE_CONFIRMATION"
-    else:
-        # If no name found, ask again
-        bot_response = "I'm sorry, I didn't catch your name. Could you please tell me your name?"
-        
-        # Add message to history
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Simple name extraction logic - can be improved with NER
+        name_indicators = ["name is", "this is", "speaking", "i am", "i'm"]
+        for indicator in name_indicators:
+            if indicator in agent_message:
+                parts = agent_message.split(indicator, 1)
+                if len(parts) > 1:
+                    # Take the first word after the indicator as the name
+                    potential_name = parts[1].strip().split()[0].strip(',.!?')
+                    if potential_name and len(potential_name) > 1:  # Ensure it's not just a letter
+                        # Capitalize the name
+                        state["agent_name"] = potential_name.capitalize()
+                        break
+    
+    # Generate customer bot response
+    system_prompt = SYSTEM_PROMPTS["INTRODUCTION"]
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Generate the customer's next response.")
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    response = chain.invoke({})
+    
+    # Add bot response to messages
+    state["messages"].append({"role": "bot", "content": response})
+    state["conversation_state"] = "INTRODUCTION"
     
     return state
 
-def queue_confirmation(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle confirming if this is the right queue for coverage inquiries."""
-    agent_messages = [m for m in state["messages"] if m["role"] == "agent"]
-    recent_agent_msg = agent_messages[-1]["content"].lower()
+def process_queue_confirmation(state: State) -> State:
+    """Process queue confirmation state"""
+    messages = state["messages"]
     
-    # Check if response indicates this is the right queue
-    positive_indicators = ["yes", "correct", "right", "can help", "assist you", "coverage"]
-    negative_indicators = ["no", "wrong", "different", "not the right", "transfer"]
-    
-    is_correct_queue = None
-    
-    for indicator in positive_indicators:
-        if indicator in recent_agent_msg:
-            is_correct_queue = True
-            break
-    
-    if is_correct_queue is None:
-        for indicator in negative_indicators:
-            if indicator in recent_agent_msg:
-                is_correct_queue = False
-                break
-    
-    if is_correct_queue is not None:
-        state["correct_queue"] = is_correct_queue
+    # Check last agent message for queue confirmation
+    if len(messages) > 0 and messages[-1]["role"] == "agent":
+        agent_message = messages[-1]["content"].lower()
         
-        if is_correct_queue:
-            # Provide member ID for authentication
-            bot_response = "Great! My member ID is MEM123456789. Could you please verify my coverage?"
-            state["member_id"] = "MEM123456789"
-            state["conversation_state"] = "AUTHENTICATION"
-        else:
-            # Handle wrong queue
-            bot_response = "Oh, I see. Could you please transfer me to the right department for coverage inquiries?"
-            state["conversation_state"] = "CONCLUSION"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
-    else:
-        # Unclear response, ask again
-        bot_response = "I'm not sure if I'm in the right place. I need to check if my insurance covers a specific procedure. Can you help with coverage inquiries?"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Check if agent confirmed correct queue
+        if any(phrase in agent_message for phrase in ["coverage", "right queue", "correct queue", "help with coverage", "assist with coverage"]):
+            state["correct_queue"] = True
+        elif any(phrase in agent_message for phrase in ["wrong queue", "incorrect queue", "transfer you", "different department"]):
+            state["correct_queue"] = False
+    
+    # Generate customer bot response
+    system_prompt = SYSTEM_PROMPTS["QUEUE_CONFIRMATION"].format(agent_name=state["agent_name"] or "agent")
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Generate the customer's next response.")
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    response = chain.invoke({})
+    
+    # Add bot response to messages
+    state["messages"].append({"role": "bot", "content": response})
+    state["conversation_state"] = "QUEUE_CONFIRMATION"
     
     return state
 
-def authentication(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the authentication phase."""
-    agent_messages = [m for m in state["messages"] if m["role"] == "agent"]
-    recent_agent_msg = agent_messages[-1]["content"].lower()
+def process_authentication(state: State) -> State:
+    """Process authentication state"""
+    messages = state["messages"]
     
-    # Check if authentication was successful
-    positive_indicators = ["verified", "confirmed", "authenticated", "found you", "found your", "located your"]
-    negative_indicators = ["not found", "can't find", "cannot find", "invalid", "incorrect"]
-    
-    is_authenticated = None
-    
-    for indicator in positive_indicators:
-        if indicator in recent_agent_msg:
-            is_authenticated = True
-            break
-    
-    if is_authenticated is None:
-        for indicator in negative_indicators:
-            if indicator in recent_agent_msg:
-                is_authenticated = False
-                break
-    
-    if is_authenticated is not None:
-        state["authenticated"] = is_authenticated
+    # Check last agent message for authentication confirmation
+    if len(messages) > 0 and messages[-1]["role"] == "agent":
+        agent_message = messages[-1]["content"].lower()
         
-        if is_authenticated:
-            # Ask about coverage for a specific procedure
-            bot_response = "Thank you for verifying my account. I'm planning to have a routine colonoscopy next month. Does my current plan cover this procedure?"
-            state["conversation_state"] = "PLAN_INQUIRY"
-        else:
-            # Handle failed authentication
-            bot_response = "I'm sorry to hear that. Let me double-check my ID. Actually, I might need to call back later with the correct information."
-            state["conversation_state"] = "CONCLUSION"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
-    else:
-        # Need more info for authentication
-        bot_response = "I provided my member ID MEM123456789. Do you need any additional information to verify my account?"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Check if agent confirmed authentication
+        if any(phrase in agent_message for phrase in ["authenticated", "verified", "confirmed your identity", "thank you for the information"]):
+            state["authenticated"] = True
+            state["member_id"] = "AD78902145"  # Store the member ID
+    
+    # Generate customer bot response
+    system_prompt = SYSTEM_PROMPTS["AUTHENTICATION"].format(agent_name=state["agent_name"] or "agent")
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Generate the customer's next response.")
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    response = chain.invoke({})
+    
+    # Add bot response to messages
+    state["messages"].append({"role": "bot", "content": response})
+    state["conversation_state"] = "AUTHENTICATION"
     
     return state
 
-def plan_inquiry(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the plan inquiry phase."""
-    agent_messages = [m for m in state["messages"] if m["role"] == "agent"]
-    recent_agent_msg = agent_messages[-1]["content"].lower()
+def process_plan_inquiry(state: State) -> State:
+    """Process plan inquiry state"""
+    messages = state["messages"]
     
-    # Analyze response about coverage
-    covered_indicators = ["covered", "included", "part of your plan", "your plan covers"]
-    not_covered_indicators = ["not covered", "isn't covered", "does not cover", "doesn't cover", "excluded"]
-    
-    plan_status = None
-    
-    for indicator in covered_indicators:
-        if indicator in recent_agent_msg:
-            plan_status = "Covered"
-            break
-    
-    if plan_status is None:
-        for indicator in not_covered_indicators:
-            if indicator in recent_agent_msg:
-                plan_status = "Not covered"
-                break
-    
-    if plan_status:
-        state["plan_status"] = plan_status
+    # Check last agent message for plan status information
+    if len(messages) > 0 and messages[-1]["role"] == "agent":
+        agent_message = messages[-1]["content"].lower()
         
-        if plan_status == "Covered":
-            bot_response = "That's great news! Thank you for checking. Is there any paperwork I need to complete before the procedure?"
-        else:
-            bot_response = "I see. That's disappointing. Are there any alternative options or ways to get this covered?"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        # We'll transition to conclusion after this
-        state["conversation_state"] = "CONCLUSION"
-    else:
-        # Unclear response about coverage
-        bot_response = "I'm not sure I understood whether the colonoscopy procedure is covered under my plan. Could you please clarify?"
-        
-        state["messages"].append({
-            "role": "bot",
-            "content": bot_response,
-            "timestamp": datetime.now().isoformat()
-        })
+        # Extract plan status
+        if "active" in agent_message:
+            state["plan_status"] = "active"
+        elif "inactive" in agent_message or "not active" in agent_message or "expired" in agent_message:
+            state["plan_status"] = "inactive"
+    
+    # Generate customer bot response
+    system_prompt = SYSTEM_PROMPTS["PLAN_INQUIRY"].format(agent_name=state["agent_name"] or "agent")
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "Generate the customer's next response.")
+    ])
+    
+    chain = prompt | llm | StrOutputParser()
+    response = chain.invoke({})
+    
+    # Add bot response to messages
+    state["messages"].append({"role": "bot", "content": response})
+    state["conversation_state"] = "PLAN_INQUIRY"
     
     return state
 
-def conclusion(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle the conclusion of the conversation."""
-    agent_messages = [m for m in state["messages"] if m["role"] == "agent"]
-    recent_agent_msg = agent_messages[-1]["content"]
+# Create the graph
+def create_workflow() -> StateGraph:
+    """Create the conversation workflow graph"""
+    # Initialize the graph
+    workflow = StateGraph(State)
     
-    # Generate a conclusion based on the conversation history
-    agent_name = state.get("agent_name", "support agent")
+    # Define nodes
+    workflow.add_node("introduction", process_introduction)
+    workflow.add_node("queue_confirmation", process_queue_confirmation)
+    workflow.add_node("authentication", process_authentication)
+    workflow.add_node("plan_inquiry", process_plan_inquiry)
     
-    bot_response = f"Thank you so much for your help today, {agent_name}! You've been very informative. Have a great day!"
+    # Define edges
+    workflow.add_edge("introduction", "queue_confirmation", should_transition_to_queue_confirmation)
+    workflow.add_edge("queue_confirmation", "authentication", should_transition_to_authentication)
+    workflow.add_edge("authentication", "plan_inquiry", should_transition_to_authentication)
+    workflow.add_edge("plan_inquiry", END, should_end_conversation)
     
-    state["messages"].append({
-        "role": "bot",
-        "content": bot_response,
-        "timestamp": datetime.now().isoformat()
-    })
+    # Add conditional loopbacks for states that need more interaction
+    workflow.add_conditional_edges(
+        "introduction",
+        lambda state: "queue_confirmation" if should_transition_to_queue_confirmation(state) else "introduction"
+    )
+    workflow.add_conditional_edges(
+        "queue_confirmation",
+        lambda state: "authentication" if should_transition_to_authentication(state) else "queue_confirmation"
+    )
+    workflow.add_conditional_edges(
+        "authentication",
+        lambda state: "plan_inquiry" if should_transition_to_plan_inquiry(state) else "authentication"
+    )
+    workflow.add_conditional_edges(
+        "plan_inquiry",
+        lambda state: END if should_end_conversation(state) else "plan_inquiry"
+    )
     
-    return state
+    # Set the entry point
+    workflow.set_entry_point("introduction")
+    
+    return workflow
 
-def handle_agent_input(agent_input: str, current_state: Dict[str, Any]) -> Dict[str, Any]:
-    """Main function to handle agent input and update conversation state."""
-    # Initialize state if needed
-    if "messages" not in current_state:
-        current_state = {
+# Compile the graph
+def get_customer_bot():
+    """Get the compiled customer support bot workflow"""
+    workflow = create_workflow()
+    return workflow.compile()
+
+# Function to handle agent input and generate bot response
+def handle_agent_input(agent_input: str, state: Dict = None) -> Dict:
+    """Process agent input and update conversation state"""
+    if state is None:
+        # Initialize state
+        state = {
             "messages": [],
             "agent_name": None,
             "member_id": None,
@@ -297,90 +273,15 @@ def handle_agent_input(agent_input: str, current_state: Dict[str, Any]) -> Dict[
             "conversation_state": "INTRODUCTION"
         }
     
-    # Add agent message to history
-    current_state["messages"].append({
-        "role": "agent",
-        "content": agent_input,
-        "timestamp": datetime.now().isoformat()
-    })
+    # Add agent message to state
+    state["messages"].append({"role": "agent", "content": agent_input})
     
-    # If this is the first message, respond with introduction
-    if len(current_state["messages"]) == 1:
-        current_state["messages"].append({
-            "role": "bot",
-            "content": "Hello! My name is Sarah Johnson, and I'm calling to inquire about my insurance coverage. May I ask who I'm speaking with?",
-            "timestamp": datetime.now().isoformat()
-        })
-        return current_state
+    # Get the workflow
+    customer_bot = get_customer_bot()
     
-    # Create the conversation workflow graph
-    workflow = StateGraph(CustomerState)
+    # Process the state through the workflow
+    for output in customer_bot.stream(state):
+        if "messages" in output:
+            latest_state = output
     
-    # Add nodes to the graph
-    workflow.add_node("INTRODUCTION", introduction)
-    workflow.add_node("QUEUE_CONFIRMATION", queue_confirmation)
-    workflow.add_node("AUTHENTICATION", authentication)
-    workflow.add_node("PLAN_INQUIRY", plan_inquiry)
-    workflow.add_node("CONCLUSION", conclusion)
-    
-    # Add conditional edges
-    workflow.add_conditional_edges(
-        "INTRODUCTION",
-        determine_next_state,
-        {
-            "INTRODUCTION": "INTRODUCTION",
-            "QUEUE_CONFIRMATION": "QUEUE_CONFIRMATION"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "QUEUE_CONFIRMATION",
-        determine_next_state,
-        {
-            "QUEUE_CONFIRMATION": "QUEUE_CONFIRMATION",
-            "AUTHENTICATION": "AUTHENTICATION",
-            "CONCLUSION": "CONCLUSION"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "AUTHENTICATION",
-        determine_next_state,
-        {
-            "AUTHENTICATION": "AUTHENTICATION",
-            "PLAN_INQUIRY": "PLAN_INQUIRY",
-            "CONCLUSION": "CONCLUSION"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "PLAN_INQUIRY",
-        determine_next_state,
-        {
-            "PLAN_INQUIRY": "PLAN_INQUIRY",
-            "CONCLUSION": "CONCLUSION"
-        }
-    )
-    
-    workflow.add_edge("CONCLUSION", END)
-    
-    # Set the entry point
-    workflow.set_entry_point(current_state["conversation_state"])
-    
-    # Compile the graph
-    app = workflow.compile()
-    
-    # Run the graph
-    for output in app.stream(current_state):
-        if "CONCLUSION" in output:
-            final_state = output["CONCLUSION"]
-            break
-        elif END in output:
-            final_state = output[END]
-            break
-        else:
-            for key, value in output.items():
-                if key in CONVERSATION_STATES:
-                    final_state = value
-    
-    return final_state
+    return latest_state
